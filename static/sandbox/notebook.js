@@ -570,9 +570,10 @@
       type: "rect", xref: "x", yref: "paper", x0: zn.a, x1: zn.b, y0: 0, y1: 1, layer: "below",
       fillcolor: fill(zn, i), opacity: 0.28, line: { width: 1, color: "rgba(16,20,43,.45)" },
     }));
+    // vertical names inside the top of each zone, as in plot_spectra: narrow zones stay readable
     const labels = () => zones.map((zn) => ({
-      x: (zn.a + zn.b) / 2, y: 1, xref: "x", yref: "paper", yanchor: "bottom", showarrow: false,
-      text: zn.name, font: { size: 11, color: "#2b2b2b" },
+      x: (zn.a + zn.b) / 2, y: 1, xref: "x", yref: "paper", xanchor: "center", yanchor: "top", textangle: -90,
+      showarrow: false, text: zn.name, font: { size: 10, color: "#2b2b2b" },
     }));
     function drawList() {
       list.innerHTML = zones.length
