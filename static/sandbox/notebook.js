@@ -3,6 +3,9 @@
 (() => {
   const NB_URL = "quickstart_synthetic.ipynb";
   const SYNTHETIC = "synthetic";                       // generated in Python, not a file
+  const CWRU = "CWRU bearings";                        // envelope spectra computed from data/cwru_bearing.npz
+  const BUILTIN = { [SYNTHETIC]: "synthetic spectra (generated below)", [CWRU]: "CWRU bearings: envelope spectra of motor vibration" };
+  const BEARING_ZONES = "bearing fault frequencies";   // the zone mode that goes with the CWRU data
   const PLOTLY_URL = "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/4.1.1/plotly-cartesian.min.js";
   const PALETTE = ["--z1", "--z2", "--z3", "--z4", "--z5", "--z6", "--z7", "--z8"];
   const PARAM_RE = /^(\s*)([A-Za-z_]\w*)(\s*=\s*)(.*?)(\s*#\s*@param\s*(.*))$/;
@@ -26,8 +29,8 @@
   let worker = null, kernelInfo = "", execCount = 0, nextRunId = 1, running = false;
   let readyResolve, kernelReady;
   const pending = new Map();                          // run id -> {cell, resolve}
-  const files = new Map([[SYNTHETIC, null]]);         // name -> ArrayBuffer (null: not a file)
-  const headers = new Map([[SYNTHETIC, []]]);
+  const files = new Map(Object.keys(BUILTIN).map((k) => [k, null])); // name -> ArrayBuffer (null: not a file)
+  const headers = new Map(Object.keys(BUILTIN).map((k) => [k, []]));
 
   // ---- kernel ---------------------------------------------------------------
   function startKernel() {
@@ -278,8 +281,18 @@
   // Sections that don't apply to the chosen dataset are dimmed (they stay editable).
   function sectionApplies(title, dataset) {
     if (/synthetic/i.test(title)) return dataset === SYNTHETIC;
-    if (/csv/i.test(title)) return dataset !== SYNTHETIC;
+    if (/cwru/i.test(title)) return dataset === CWRU;
+    if (/csv/i.test(title)) return !(dataset in BUILTIN);
     return true;
+  }
+
+  // The CWRU data come with zones from the bearing's fault frequencies: picking the dataset picks them too,
+  // and leaving it goes back to detected peaks.
+  function setDataset(cell, name) {
+    const zones = params(cell).find((x) => x.name === "zones");
+    if (zones && name === CWRU && (zones.value === "detect peaks" || zones.value === "equal width")) setParam(cell, "zones", pyLiteral(BEARING_ZONES));
+    if (zones && name !== CWRU && zones.value === BEARING_ZONES) setParam(cell, "zones", pyLiteral("detect peaks"));
+    setParam(cell, "dataset", pyLiteral(name));
   }
 
   function buildForm(cell) {
@@ -291,7 +304,7 @@
       if (p.kind === "markdown") {
         dim = !sectionApplies(p.text, dataset);
         const head = el("div", `form-head${dim ? " dim" : ""}`, DOMPurify.sanitize(marked.parseInline(p.text)));
-        if (dim) head.append(el("span", "form-note", /synthetic/i.test(p.text) ? " · not used with a CSV" : " · used with a CSV"));
+        if (dim) head.append(el("span", "form-note", /csv/i.test(p.text) ? " · used with a CSV" : " · not used with this dataset"));
         form.append(head);
         continue;
       }
@@ -302,13 +315,13 @@
       if (spec.type === "file") {
         field = el("div", "field wide", `<span class="flabel">${label}</span>
           <div class="dropzone">
-            <select id="${id}" aria-label="${label}">${[...files.keys()].map((f) => `<option value="${esc(f)}"${f === p.value ? " selected" : ""}>${f === SYNTHETIC ? "synthetic spectra (generated below)" : esc(f)}</option>`).join("")}</select>
+            <select id="${id}" aria-label="${label}">${[...files.keys()].map((f) => `<option value="${esc(f)}"${f === p.value ? " selected" : ""}>${esc(BUILTIN[f] || f)}</option>`).join("")}</select>
             <button type="button" class="btn btn-sm">Load CSV…</button>
             <input type="file" accept=".csv,text/csv" hidden>
             <span class="hint">or drop a CSV here · read locally, never uploaded</span>
           </div>`);
         const select = $("select", field), input = $("input", field);
-        select.onchange = () => { setParam(cell, p.name, pyLiteral(select.value)); buildForm(cell); };
+        select.onchange = () => { setDataset(cell, select.value); buildForm(cell); };
         $("button", field).onclick = () => input.click();
         input.onchange = () => { if (input.files[0]) loadFile(cell, input.files[0]); };
       } else if (spec.type === "boolean") {
@@ -363,7 +376,7 @@
     // offer the non-numeric columns as class columns; the spectral ones are named by numbers
     headers.set(name, header.filter((h) => h === "" || Number.isNaN(Number(h))).filter(Boolean));
     worker.postMessage({ type: "file", name, bytes: buf.slice(0) });
-    setParam(cell, "dataset", pyLiteral(name));
+    setDataset(cell, name);
     setParam(cell, "target_column", '""');
     setParam(cell, "positive_class", '""');
     setParam(cell, "first_column_is_index", header[0] === "" || /^Unnamed/.test(header[0] || "") ? "True" : "False");
@@ -437,6 +450,7 @@
     if (out.kind === "stream") return appendStream(cell, out.text);
     let node;
     if (out.kind === "text") node = el("pre", "out-text", esc(out.text));
+    else if (out.kind === "markdown") node = el("div", "out-md md-body", DOMPurify.sanitize(marked.parse(out.text)));
     else if (out.kind === "error") {
       node = el("div", "out-error", `<strong>${esc(out.ename)}</strong> <span class="evalue">${esc(out.evalue)}</span>${out.traceback ? `<pre>${esc(out.traceback)}</pre>` : ""}`);
     } else if (out.kind === "table") node = renderTable(out);
@@ -551,7 +565,7 @@
     const plot = $(".plotly-host", wrap), list = $(".ze-zones", wrap), undoBtn = $('[data-ze="undo"]', wrap);
     $(".ze-changed .btn", wrap).onclick = () => runAll();
 
-    const fill = (zn, i) => (/^background/i.test(zn.name) ? css("--g-bg-fill") : colour(i));
+    const fill = (zn, i) => (/background/i.test(zn.name) ? css("--g-bg-fill") : colour(i));
     const shapes = () => zones.map((zn, i) => ({
       type: "rect", xref: "x", yref: "paper", x0: zn.a, x1: zn.b, y0: 0, y1: 1, layer: "below",
       fillcolor: fill(zn, i), opacity: 0.28, line: { width: 1, color: "rgba(16,20,43,.45)" },
@@ -621,7 +635,7 @@
       const layout = {
         template: "plotly_white", height: 380, autosize: true, margin: { l: 56, r: 16, t: 40, b: 46 },
         dragmode: "select", selectdirection: "h", hovermode: "x", showlegend: false,
-        xaxis: { title: { text: "Spectral axis" } }, yaxis: { title: { text: "Intensity" }, fixedrange: true },
+        xaxis: { title: { text: z.xlabel || "Spectral axis" } }, yaxis: { title: { text: z.ylabel || "Intensity" }, fixedrange: true },
         shapes: shapes(), annotations: labels(),
       };
       Plotly.newPlot(plot, [trace], layout, {
@@ -685,8 +699,10 @@
     const base = new URL(".", location.href).href;
     const setup = [
       "# Running this notebook outside the SMX Sandbox? This cell installs SMX with plotting and fetches the",
-      "# display helpers once. To use your own data, put the CSV next to the notebook and set `dataset` below.",
-      "import importlib.util, urllib.request",
+      "# display helpers once (the CWRU bearing data too, when used). To use your own data, put the CSV next to the",
+      "# notebook and set `dataset` below.",
+      "import importlib.util, os, urllib.request",
+      `os.environ["SMX_SANDBOX_URL"] = "${base}"`,
       'if importlib.util.find_spec("smx") is None:',
       '    %pip install "spectral-model-explainer[plotting]"',
       'if importlib.util.find_spec("smx_sandbox") is None:',

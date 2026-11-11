@@ -7,6 +7,13 @@ import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyod
 let currentId = null, runCell = null;
 const status = (state, text) => postMessage({ type: "status", state, text });
 
+// Data files the notebook can use (smx_sandbox.data_file), fetched alongside Python and put next to the notebook.
+// A file that fails to load only matters to the dataset that needs it, which then reports it.
+const DATA_FILES = ["data/cwru_bearing.npz"];
+const dataFiles = DATA_FILES.map((path) => fetch(path)
+  .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+  .then((buf) => ({ path, buf }), (err) => ({ path, err })));
+
 const ready = (async () => {
   status("loading", "Loading Python…");
   const py = await loadPyodide();
@@ -18,6 +25,11 @@ const ready = (async () => {
   const helpers = await fetch("smx_sandbox.py");
   if (!helpers.ok) throw new Error(`smx_sandbox.py: HTTP ${helpers.status}`);
   py.FS.writeFile("/home/pyodide/smx_sandbox.py", await helpers.text());
+  for (const { path, buf, err } of await Promise.all(dataFiles)) {
+    if (err) { console.warn(`${path}: ${err.message}`); continue; }
+    py.FS.mkdirTree(`/home/pyodide/${path.replace(/\/[^/]*$/, "")}`);
+    py.FS.writeFile(`/home/pyodide/${path}`, new Uint8Array(buf));
+  }
   status("loading", "Importing libraries…");
   await py.runPythonAsync("import smx_sandbox; smx_sandbox._setup(); import smx, sklearn");
   runCell = py.pyimport("smx_sandbox").run_cell;

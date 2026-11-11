@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
 import time
 import traceback
 
@@ -27,9 +28,14 @@ except ImportError:
 
 IN_SANDBOX = _bridge_emit is not None
 MAX_TABLE_ROWS = 500
+MAX_SPECTRA_PER_CLASS = 200  # plot_spectra draws at most this many spectra of each class
+# where data_file() downloads the Sandbox's data files outside the Sandbox, unless $SMX_SANDBOX_URL is set
+# (the downloaded notebook sets it to the Sandbox it came from)
+SANDBOX_URL = "https://raw.githubusercontent.com/joseviniciusr/SMX_web/main/static/sandbox/"
 
 __all__ = [
-    "display", "graph_data", "show_dataset", "show_faithfulness", "show_graph", "show_metrics", "zone_editor",
+    "data_file", "display", "graph_data", "plot_spectra", "show_dataset", "show_faithfulness", "show_graph",
+    "show_markdown", "show_metrics", "zone_editor",
 ]
 
 
@@ -152,6 +158,24 @@ def graph_data(explainer, repetition: int | None = None, class_names: dict | Non
 # ---------------------------------------------------------------------------
 
 
+def data_file(path: str) -> str:
+    """Local path of a data file that comes with the Sandbox, e.g. ``data/cwru_bearing.npz``.
+
+    The Sandbox page puts these files next to the notebook. Elsewhere (a downloaded copy of the notebook) a
+    missing file is downloaded once from SANDBOX_URL.
+    """
+    if os.path.exists(path):
+        return path
+    if IN_SANDBOX:
+        raise FileNotFoundError(f"{path} did not load; check the connection and press Restart")
+    import urllib.request
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    url = os.environ.get("SMX_SANDBOX_URL", SANDBOX_URL) + path
+    print(f"Downloading {url}")
+    urllib.request.urlretrieve(url, path)
+    return path
+
+
 def _emit(payload: dict) -> None:
     _bridge_emit(json.dumps(payload, default=_plain, allow_nan=False))
 
@@ -198,7 +222,8 @@ def _class_colors(labels) -> dict:
     return DEFAULT_THEME.class_color_map([str(c) for c in labels])
 
 
-def show_dataset(X: pd.DataFrame, y: pd.Series, positive=None) -> None:
+def show_dataset(X: pd.DataFrame, y: pd.Series, positive=None, xlabel: str = "Spectral axis",
+                 ylabel: str = "Intensity") -> None:
     """Summarise a spectral dataset: size, spectral axis, class balance and the mean spectrum of each class."""
     axis = pd.to_numeric(pd.Index(X.columns).astype(str), errors="coerce")
     counts = y.astype(str).value_counts().sort_index()
@@ -217,7 +242,7 @@ def show_dataset(X: pd.DataFrame, y: pd.Series, positive=None) -> None:
                                  hoverinfo="skip", showlegend=False))
         fig.add_trace(go.Scatter(x=axis, y=mean, name=f"{cls} (mean ± std)", line={"color": color, "width": 2}))
     fig.update_layout(template="plotly_white", height=360, margin={"l": 60, "r": 20, "t": 50, "b": 50},
-                      title="Mean spectrum per class", xaxis_title="Spectral axis", yaxis_title="Intensity",
+                      title="Mean spectrum per class", xaxis_title=xlabel, yaxis_title=ylabel,
                       legend={"orientation": "h", "y": -0.2})
 
     if not IN_SANDBOX:
@@ -237,8 +262,41 @@ def show_dataset(X: pd.DataFrame, y: pd.Series, positive=None) -> None:
     display(fig)
 
 
+def plot_spectra(X: pd.DataFrame, y: pd.Series, spectral_cuts=None, positive=None, title: str = "Spectra per class",
+                 xlabel: str = "Spectral axis", ylabel: str = "Intensity", height: int = 460):
+    """Draw every spectrum, coloured by class, over the zones (names at the top); returns the Plotly figure.
+
+    The explained class (``positive``) is drawn last, on top. Classes with more than MAX_SPECTRA_PER_CLASS
+    spectra show a random sample of them.
+    """
+    import plotly.graph_objects as go
+    axis = pd.to_numeric(pd.Index(X.columns).astype(str), errors="coerce")
+    labels = y.astype(str).to_numpy()
+    order = sorted(set(labels), key=lambda c: (c == str(positive), c))
+    colors = _class_colors(sorted(set(labels)))
+    rng = np.random.default_rng(0)
+    fig = go.Figure()
+    for cls in order:
+        rows = np.flatnonzero(labels == cls)
+        if len(rows) > MAX_SPECTRA_PER_CLASS:
+            rows = np.sort(rng.choice(rows, MAX_SPECTRA_PER_CLASS, replace=False))
+        for k, i in enumerate(rows):
+            fig.add_trace(go.Scatter(x=axis, y=X.iloc[i].to_numpy(dtype=float), mode="lines", name=str(cls),
+                                     legendgroup=str(cls), showlegend=k == 0, opacity=0.5, hoverinfo="skip",
+                                     line={"color": colors[cls], "width": 0.6}))
+    for k, (name, start, end) in enumerate(spectral_cuts or []):
+        fig.add_vrect(x0=start, x1=end, layer="below", line_width=0.5, line_color="rgba(100,100,100,0.3)",
+                      fillcolor=("rgba(180,180,220,0.2)", "rgba(220,220,180,0.2)")[k % 2],
+                      annotation={"text": str(name), "textangle": -90, "font": {"size": 9}},
+                      annotation_position="top")
+    fig.update_layout(template="plotly_white", height=height, title=title, xaxis_title=xlabel, yaxis_title=ylabel,
+                      margin={"l": 60, "r": 20, "t": 60, "b": 50},
+                      legend={"orientation": "h", "y": -0.18, "itemsizing": "constant"})
+    return fig
+
+
 def zone_editor(spectrum: pd.Series, spectral_cuts, param: str = "manual_zones", mode_param: str = "zones",
-                mode_value: str = "manual") -> None:
+                mode_value: str = "manual", xlabel: str = "Spectral axis", ylabel: str = "Intensity") -> None:
     """Show the spectrum with its zones; in the Sandbox the zones can be drawn and edited on the chart.
 
     Edits are written back to the form as ``param = "start-end, …"`` and switch ``mode_param`` to
@@ -247,8 +305,9 @@ def zone_editor(spectrum: pd.Series, spectral_cuts, param: str = "manual_zones",
     if not IN_SANDBOX:
         from smx import plot_spectrum_with_zones
         print(f"To change the zones, set zones = {mode_value!r} and edit {param} (start-end, …).")
-        display(plot_spectrum_with_zones(spectrum, spectral_cuts, title="Mean calibration spectrum and its zones",
-                                         height=380))
+        fig = plot_spectrum_with_zones(spectrum, spectral_cuts, title="Mean calibration spectrum and its zones",
+                                       height=380)
+        display(fig.update_layout(xaxis_title=xlabel, yaxis_title=ylabel))
         return
     axis = pd.to_numeric(pd.Index(spectrum.index).astype(str), errors="coerce")
     _emit({
@@ -259,7 +318,18 @@ def zone_editor(spectrum: pd.Series, spectral_cuts, param: str = "manual_zones",
         "param": param,
         "modeParam": mode_param,
         "modeValue": mode_value,
+        "xlabel": xlabel,
+        "ylabel": ylabel,
     })
+
+
+def show_markdown(text: str) -> None:
+    """Show a short Markdown note in the cell output, e.g. where the data come from."""
+    if not IN_SANDBOX:
+        from IPython.display import Markdown
+        display(Markdown(text))
+        return
+    _emit({"kind": "markdown", "text": str(text)})
 
 
 def show_metrics(metrics: dict) -> None:
