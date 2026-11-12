@@ -35,7 +35,7 @@ SANDBOX_URL = "https://raw.githubusercontent.com/joseviniciusr/SMX_web/main/stat
 
 __all__ = [
     "data_file", "display", "graph_data", "plot_spectra", "show_dataset", "show_faithfulness", "show_graph",
-    "show_markdown", "show_metrics", "zone_editor",
+    "show_markdown", "show_metrics", "vertical_zone_labels", "zone_editor",
 ]
 
 
@@ -293,6 +293,20 @@ def plot_spectra(X: pd.DataFrame, y: pd.Series, spectral_cuts=None, positive=Non
                       margin={"l": 60, "r": 20, "t": 60, "b": 50},
                       legend={"orientation": "h", "y": -0.18, "itemsizing": "constant"})
     return fig
+
+
+def vertical_zone_labels(fig):
+    """Turn the zone labels of smx's plot_zone_ranking_over_spectrum vertical; returns the figure.
+
+    smx writes "#rank<br>zone<br>score" horizontally above the chart, which overlaps for narrow zones
+    (the 22 CWRU bearing zones). The labels become one vertical line inside the top of each zone, as in
+    plot_spectra, and the top margin they needed goes away.
+    """
+    for ann in fig.layout.annotations:
+        if ann.yref == "paper" and ann.xref == "x":
+            ann.update(text=" ".join(str(ann.text).split("<br>")), y=1, yanchor="top", xanchor="center",
+                       textangle=-90, font_size=10)
+    return fig.update_layout(margin_t=60)
 
 
 def zone_editor(spectrum: pd.Series, spectral_cuts, param: str = "manual_zones", mode_param: str = "zones",
